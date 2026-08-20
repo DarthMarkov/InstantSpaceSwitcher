@@ -287,6 +287,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func performSpaceSwitch(_ direction: ISSDirection) {
+    if CGEventSource.buttonState(.combinedSessionState, button: .left),
+       NativeSpaceShortcutForwarder.postShortcut(for: direction) {
+      return
+    }
+
     if !iss_switch(direction) {
       NSSound.beep()
       return

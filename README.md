@@ -12,6 +12,21 @@ https://github.com/user-attachments/assets/037422c9-3fb7-41cd-8da7-58d28c4c8eff
 
 A simple CLI is provided (`InstantSpaceSwitcher.app/Contents/MacOS/ISSCli --help`)
 
+### Moving a dragged window between Spaces
+
+InstantSpaceSwitcher can preserve macOS's native behavior of moving a window to
+another Space while you drag it. Keep Mission Control's **Move left a space** and
+**Move right a space** shortcuts set to Control-Left Arrow and Control-Right
+Arrow, then configure InstantSpaceSwitcher with unmodified shortcuts such as F6
+and F7. Modifier-based InstantSpaceSwitcher shortcuts are not supported for this
+drag behavior because their held modifiers can alter the native shortcut that
+InstantSpaceSwitcher posts.
+
+While the left mouse button is held, directional switches use the native macOS
+shortcuts so the dragged window follows. If those native shortcuts are disabled
+or remapped, InstantSpaceSwitcher falls back to its normal instant switch and the
+window remains on its original Space.
+
 
 ## Installation
 
@@ -62,4 +77,3 @@ If you work at Apple, and your team owns the space switching animation, please f
 
 [^1]: This happens because the app is not signed, which requires a costly Apple Developer account
 [^2]: And I know for a fact there is a rdar for this
-
