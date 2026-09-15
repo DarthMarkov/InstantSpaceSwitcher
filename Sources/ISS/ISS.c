@@ -1,4 +1,5 @@
 #include "include/ISS.h"
+#include "event_serialize.h"
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -6,6 +7,7 @@
 #include <assert.h>
 #include <dlfcn.h>
 #include <float.h>
+#include <mach/mach_time.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,9 +17,13 @@ static const CGEventField kCGSEventTypeField = (CGEventField)55;
 static const CGEventField kCGEventGestureHIDType = (CGEventField)110;
 static const CGEventField kCGEventGestureSwipeMotion = (CGEventField)123;
 static const CGEventField kCGEventGestureSwipeProgress = (CGEventField)124;
+static const CGEventField kCGEventGestureSwipePositionX = (CGEventField)125;
 static const CGEventField kCGEventGestureSwipeVelocityX = (CGEventField)129;
 static const CGEventField kCGEventGestureSwipeVelocityY = (CGEventField)130;
 static const CGEventField kCGEventGesturePhase = (CGEventField)132;
+static const CGEventField kCGEventGesturePhaseAlias = (CGEventField)134;
+static const CGEventField kCGEventGestureZoomDeltaY = (CGEventField)138;
+static const CGEventField kCGEventSourceUnixProcessIDAlias = (CGEventField)169;
 
 // See IOHIDEventType enum in IOHIDFamily
 static const uint32_t kIOHIDEventTypeDockSwipe = 23;
@@ -424,11 +430,17 @@ bool iss_can_move(ISSSpaceInfo info, ISSDirection direction) {
 
 static bool iss_post_dock_swipe(CGSGesturePhase phase, ISSDirection direction, double velocity) {
     const bool isRight = (direction == ISSDirectionRight);
-    // Empirically, ±FLT_TRUE_MIN used in this way makes switching instant.
-    const double progress = isRight ? (double)FLT_TRUE_MIN : -(double)FLT_TRUE_MIN;
+
+    // On macOS 27 the Dock server's interpretation of positive/negative
+    // progress and velocity is inverted relative to the app's internal
+    // direction model. Flip the sign for the augmented path only.
+    const double progress = iss_requires_event_augmentation()
+                                ? (isRight ? -0.000016 : 0.000016)
+                                : (isRight ? (double)FLT_TRUE_MIN : -(double)FLT_TRUE_MIN);
 
     // Velocity of gesture based on speed setting
     const double vel = isRight ? velocity : -velocity;
+    const double modernVel = isRight ? -velocity : velocity;
 
     CGEventRef ev = CGEventCreate(NULL);
     if (!ev) {
@@ -439,6 +451,29 @@ static bool iss_post_dock_swipe(CGSGesturePhase phase, ISSDirection direction, d
     CGEventSetIntegerValueField(ev, kCGEventGesturePhase, phase);
     CGEventSetDoubleValueField(ev, kCGEventGestureSwipeProgress, progress);
     CGEventSetIntegerValueField(ev, kCGEventGestureSwipeMotion, kCGGestureMotionHorizontal);
+
+    if (iss_requires_event_augmentation()) {
+        CGEventSetIntegerValueField(ev, kCGEventGesturePhaseAlias, phase);
+        CGEventSetDoubleValueField(ev, kCGEventGestureZoomDeltaY, 3.0);
+        CGEventSetDoubleValueField(ev, kCGEventSourceUnixProcessIDAlias,
+                                    (double)mach_absolute_time());
+        CGEventSetDoubleValueField(ev, kCGEventGestureSwipePositionX, 0.1);
+
+        // Match FasterSwiper: only the Ended event carries velocity.
+        if (phase == kCGSGesturePhaseEnded) {
+            CGEventSetDoubleValueField(ev, kCGEventGestureSwipeVelocityX, modernVel);
+        }
+
+        CGEventRef augmented = iss_augment_dock_swipe_event(ev);
+        CFRelease(ev);
+        if (!augmented) {
+            return false;
+        }
+        CGEventPost(kCGSessionEventTap, augmented);
+        CFRelease(augmented);
+        return true;
+    }
+
     CGEventSetDoubleValueField(ev, kCGEventGestureSwipeVelocityX, vel);
     CGEventSetDoubleValueField(ev, kCGEventGestureSwipeVelocityY, vel);
     CGEventPost(kCGSessionEventTap, ev);
@@ -449,9 +484,20 @@ static bool iss_post_dock_swipe(CGSGesturePhase phase, ISSDirection direction, d
 static bool iss_perform_switch_gesture(ISSDirection direction, double velocity) {
     // Send three gesture events--began, changed, and ended
     // If we only send two then mission control doesn't work.
-    return iss_post_dock_swipe(kCGSGesturePhaseBegan,   direction, velocity)
-        && iss_post_dock_swipe(kCGSGesturePhaseChanged, direction, velocity)
-        && iss_post_dock_swipe(kCGSGesturePhaseEnded,   direction, velocity);
+    // PR #88 (c64e0fd): macOS 27 can drop phases posted back-to-back.
+    const useconds_t phaseDelay = iss_requires_event_augmentation() ? 10000 : 0;
+
+    if (!iss_post_dock_swipe(kCGSGesturePhaseBegan, direction, velocity)) {
+        return false;
+    }
+    if (phaseDelay) usleep(phaseDelay);
+
+    if (!iss_post_dock_swipe(kCGSGesturePhaseChanged, direction, velocity)) {
+        return false;
+    }
+    if (phaseDelay) usleep(phaseDelay);
+
+    return iss_post_dock_swipe(kCGSGesturePhaseEnded, direction, velocity);
 }
 
 /** @brief Walks a CGWindowListCopyWindowInfo result

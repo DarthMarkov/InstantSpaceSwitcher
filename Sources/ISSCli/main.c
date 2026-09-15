@@ -1,4 +1,5 @@
 #include "../ISS/include/ISS.h"
+#include <CoreFoundation/CoreFoundation.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +58,9 @@ int main(int argc, char **argv) {
         iss_destroy();
         return 1;
     }
+
+    // Service the event tap before exiting so the Dock receives the gesture.
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.3, false);
 
     iss_destroy();
     return 0;
