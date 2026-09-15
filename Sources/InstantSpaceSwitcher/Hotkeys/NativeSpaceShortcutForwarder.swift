@@ -47,21 +47,48 @@ enum NativeSpaceShortcutForwarder {
     for direction: ISSDirection, keyCode: CGKeyCode
   ) -> Bool {
     let shortcutID = direction == ISSDirectionLeft ? "79" : "81"
-    let expectedFlags: CGEventFlags = [.maskControl, .maskSecondaryFn]
 
     guard
       let defaults = UserDefaults(suiteName: "com.apple.symbolichotkeys"),
       let hotkeys = defaults.dictionary(forKey: "AppleSymbolicHotKeys"),
-      let entry = hotkeys[shortcutID] as? [String: Any],
-      entry["enabled"] as? Bool == true,
+      let entry = hotkeys[shortcutID] as? [String: Any]
+    else {
+      return false
+    }
+
+    return isControlArrowEnabled(entry: entry, keyCode: keyCode)
+  }
+
+  static func isControlArrowEnabled(entry: [String: Any], keyCode: CGKeyCode) -> Bool {
+    let expectedFlags: CGEventFlags = [.maskControl, .maskSecondaryFn]
+
+    // Preferences written by other tools can contain strings instead of plist
+    // booleans and integers. Accept either representation of the same shortcut.
+    let enabled: Bool
+    if let number = entry["enabled"] as? NSNumber {
+      enabled = number.boolValue
+    } else if let string = entry["enabled"] as? String {
+      enabled = ["1", "true", "yes"].contains(string.lowercased())
+    } else {
+      enabled = false
+    }
+
+    guard
+      enabled,
       let value = entry["value"] as? [String: Any],
-      let parameters = value["parameters"] as? [NSNumber],
+      let parameters = value["parameters"] as? [Any],
       parameters.count >= 3
     else {
       return false
     }
 
-    return parameters[1].uint16Value == keyCode
-      && parameters[2].uint64Value == expectedFlags.rawValue
+    return integerValue(parameters[1]) == UInt64(keyCode)
+      && integerValue(parameters[2]) == expectedFlags.rawValue
+  }
+
+  private static func integerValue(_ value: Any) -> UInt64? {
+    if let number = value as? NSNumber { return number.uint64Value }
+    if let string = value as? String { return UInt64(string) }
+    return nil
   }
 }
