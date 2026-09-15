@@ -431,16 +431,15 @@ bool iss_can_move(ISSSpaceInfo info, ISSDirection direction) {
 static bool iss_post_dock_swipe(CGSGesturePhase phase, ISSDirection direction, double velocity) {
     const bool isRight = (direction == ISSDirectionRight);
 
-    // On macOS 27 the Dock server's interpretation of positive/negative
-    // progress and velocity is inverted relative to the app's internal
-    // direction model. Flip the sign for the augmented path only.
+    // Keep gesture direction aligned with the bounds checks and native drag
+    // fallback. macOS 27 needs progress large enough for 16.16 serialization,
+    // but the sign inversion used by the early beta port reverses switching.
     const double progress = iss_requires_event_augmentation()
-                                ? (isRight ? -0.000016 : 0.000016)
+                                ? (isRight ? 0.000016 : -0.000016)
                                 : (isRight ? (double)FLT_TRUE_MIN : -(double)FLT_TRUE_MIN);
 
     // Velocity of gesture based on speed setting
     const double vel = isRight ? velocity : -velocity;
-    const double modernVel = isRight ? -velocity : velocity;
 
     CGEventRef ev = CGEventCreate(NULL);
     if (!ev) {
@@ -461,7 +460,7 @@ static bool iss_post_dock_swipe(CGSGesturePhase phase, ISSDirection direction, d
 
         // Match FasterSwiper: only the Ended event carries velocity.
         if (phase == kCGSGesturePhaseEnded) {
-            CGEventSetDoubleValueField(ev, kCGEventGestureSwipeVelocityX, modernVel);
+            CGEventSetDoubleValueField(ev, kCGEventGestureSwipeVelocityX, vel);
         }
 
         CGEventRef augmented = iss_augment_dock_swipe_event(ev);
