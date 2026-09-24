@@ -13,6 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var cancellables = Set<AnyCancellable>()
   private var spaceChangeObserver: Any?
   private var appActivationObserver: Any?
+  // Diagnostics are off unless launched with ISS_TRACE_LATENCY=1. No probe
+  // timers run during normal use. See deploy.md for usage and limitations.
+  private var latencyProbe: DispatchSourceTimer?
+  private var spaceStateProbe: Timer?
+  private var lastObservedSpace: String?
+  private var spaceStateProbeDeadline: TimeInterval = 0
 
   func applicationWillFinishLaunching(_ notification: Notification) {
     NSAppleEventManager.shared().setEventHandler(
@@ -29,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     ensureAccessibilityPermission()
+    startLatencyProbe()
 
     if !iss_init() {
       print("Failed to initialize ISS event tap")
@@ -69,9 +76,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    latencyProbe?.cancel()
+    spaceStateProbe?.invalidate()
     iss_destroy()
     stopObservingSpaceChanges()
     stopObservingAppActivation()
+  }
+
+  private func startLatencyProbe() {
+    guard ProcessInfo.processInfo.environment["ISS_TRACE_LATENCY"] == "1" else { return }
+    // Measure main-queue availability independently of event-tap delivery.
+    // Only the opt-in diagnostic launch runs this probe.
+    let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+    timer.schedule(deadline: .now(), repeating: .milliseconds(25), leeway: .milliseconds(5))
+    timer.setEventHandler {
+      let queuedAt = ProcessInfo.processInfo.systemUptime
+      DispatchQueue.main.async {
+        let delay = (ProcessInfo.processInfo.systemUptime - queuedAt) * 1000
+        if delay >= 25 {
+          iss_trace_latency(String(format: "main queue probe: delayed %.1f ms", delay))
+        }
+      }
+    }
+    latencyProbe = timer
+    timer.resume()
+    iss_trace_latency("main queue probe enabled: 25 ms interval")
   }
 
   private func retryIssInit() {
@@ -79,6 +108,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
       self?.retryIssInit()
     }
+  }
+
+  private func startSpaceStateProbe() {
+    guard ProcessInfo.processInfo.environment["ISS_TRACE_LATENCY"] == "1" else { return }
+    spaceStateProbeDeadline = ProcessInfo.processInfo.systemUptime + 2
+    recordSpaceState()
+    guard spaceStateProbe == nil else { return }
+    // Sample the cursor display's reported state, independently of workspace
+    // notifications. This is not a measurement of visible frame completion.
+    let timer = Timer(timeInterval: 0.01, repeats: true) { [weak self] timer in
+      guard let self else { timer.invalidate(); return }
+      guard ProcessInfo.processInfo.systemUptime < self.spaceStateProbeDeadline else {
+        timer.invalidate()
+        self.spaceStateProbe = nil
+        return
+      }
+      self.recordSpaceState()
+    }
+    spaceStateProbe = timer
+    RunLoop.main.add(timer, forMode: .common)
+  }
+
+  private func recordSpaceState() {
+    var info = ISSSpaceInfo()
+    guard iss_get_space_info(&info) else { return }
+    let displayID = withUnsafePointer(to: &info.displayID) {
+      $0.withMemoryRebound(to: CChar.self, capacity: 128) { String(cString: $0) }
+    }
+    let state = "\(displayID):\(info.currentIndex)"
+    guard state != lastObservedSpace else { return }
+    lastObservedSpace = state
+    iss_trace_latency("observed space state: display=\(displayID), index=\(info.currentIndex + 1)")
   }
 
   private func ensureAccessibilityPermission() {
@@ -287,8 +348,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func performSpaceSwitch(_ direction: ISSDirection) {
+    iss_trace_latency(direction == ISSDirectionLeft ? "hotkey handler: left" : "hotkey handler: right")
+    startSpaceStateProbe()
+    defer { iss_trace_latency("hotkey handler: done") }
     if CGEventSource.buttonState(.combinedSessionState, button: .left),
        NativeSpaceShortcutForwarder.postShortcut(for: direction) {
+      iss_trace_latency("native drag shortcut forwarded")
       return
     }
 
@@ -317,8 +382,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func refreshSpaceInfo() {
+    iss_trace_latency("refresh: begin")
+    defer { iss_trace_latency("refresh: done") }
     var info = ISSSpaceInfo()
     if iss_get_menubar_space_info(&info) {
+      iss_trace_latency("refresh: space lookup done")
       if currentSpaceIndex != info.currentIndex {
         lastSpaceIndex = currentSpaceIndex
         currentSpaceIndex = info.currentIndex
@@ -337,6 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       object: nil,
       queue: .main
     ) { [weak self] _ in
+      iss_trace_latency("activeSpaceDidChange notification")
       Task { @MainActor [weak self] in
         guard let self else { return }
         self.refreshSpaceInfo()

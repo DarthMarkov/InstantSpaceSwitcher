@@ -118,4 +118,7 @@ void iss_set_overlay_detection_enabled(bool enabled);
  */
 void iss_set_gesture_speed(double speed);
 
+/** Emits a monotonic timestamp to stderr only when ISS_TRACE_LATENCY=1. */
+void iss_trace_latency(const char *stage);
+
 #endif /* _ISS_H */

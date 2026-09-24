@@ -9,6 +9,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
   private var spacesMenuItem: NSMenuItem?
   private var cachedSpaceInfo: ISSSpaceInfo?
   private var refreshWorkItem: DispatchWorkItem?
+  private var appearanceWorkItem: DispatchWorkItem?
+  private var renderedSpaceIndex: UInt32?
+  private var hasRenderedIcon = false
 
   private lazy var baseStatusImage: NSImage? = {
     let image = NSImage(
@@ -22,6 +25,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
   func setup() {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     statusItem.menu = createMenu()
+    statusItem.button?.font = nil
+    statusItem.button?.title = ""
+    statusItem.button?.imagePosition = .imageOnly
     updateStatusItemAppearance()
   }
 
@@ -114,6 +120,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
   func updateWithSpaceInfo(_ info: ISSSpaceInfo?) {
     cachedSpaceInfo = info
     updateMenuState()
+    // macOS 27 status-item rendering can synchronously wait for an animation
+    // fence during a Space transition, blocking hotkeys and the gesture tap.
+    // Coalesce icon changes until switching has settled.
+    appearanceWorkItem?.cancel()
+    let item = DispatchWorkItem { [weak self] in
+      self?.updateStatusItemAppearance()
+    }
+    appearanceWorkItem = item
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
   }
 
   func scheduleRefresh(after delay: TimeInterval) {
@@ -136,7 +151,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     updateSpacesMenuItems()
-    updateStatusItemAppearance()
   }
 
   private func updateSpacesMenuItems() {
@@ -199,11 +213,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
   }
 
   private func updateStatusItemAppearance() {
-    guard let button = statusItem.button else { return }
-
-    button.font = nil
-    button.title = ""
-    button.imagePosition = .imageOnly
+    guard statusItem.isVisible, let button = statusItem.button else { return }
+    let spaceIndex = cachedSpaceInfo?.currentIndex
+    guard !hasRenderedIcon || renderedSpaceIndex != spaceIndex else { return }
 
     let icon: NSImage?
     if let info = cachedSpaceInfo {
@@ -215,10 +227,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     let finalIcon = icon ?? baseStatusImage
     finalIcon?.isTemplate = true
     button.image = finalIcon
+    renderedSpaceIndex = spaceIndex
+    hasRenderedIcon = true
   }
 
   func setIconVisible(_ visible: Bool) {
     statusItem.isVisible = visible
+    if visible { updateStatusItemAppearance() }
   }
 
   func applyHotkey(_ combination: HotkeyCombination, to identifier: HotkeyIdentifier) {

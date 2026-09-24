@@ -10,6 +10,7 @@
 #include <mach/mach_time.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -75,6 +76,29 @@ static double gestureSpeed = 2000.0;
 
 static ISSSwitchCallback switchCallback = NULL;
 
+// Disabled by default. Set ISS_TRACE_LATENCY=1 at launch to investigate
+// input, gesture delivery, and space-state latency; see deploy.md.
+static bool latency_trace_enabled(void) {
+    static int enabled = -1;
+    if (enabled == -1) {
+        const char *value = getenv("ISS_TRACE_LATENCY");
+        enabled = value && strcmp(value, "1") == 0;
+    }
+    return enabled;
+}
+
+static double latency_time_ms(void) {
+    mach_timebase_info_data_t timebase;
+    mach_timebase_info(&timebase);
+    return (double)mach_absolute_time() * timebase.numer / timebase.denom / 1e6;
+}
+
+void iss_trace_latency(const char *stage) {
+    if (latency_trace_enabled()) {
+        fprintf(stderr, "ISS latency %.3f ms: %s\n", latency_time_ms(), stage);
+    }
+}
+
 // Predictions dictionary: DisplayID (CFStringRef) -> Index (CFNumberRef)
 static CFMutableDictionaryRef predictionsDict = NULL;
 
@@ -134,6 +158,23 @@ static CGEventRef eventTapCallback(CGEventTapProxy proxy, CGEventType type,
                                    CGEventRef event, void *refcon) {
     (void)proxy;
     (void)refcon;
+
+    if (event && latency_trace_enabled()) {
+        // Trace F6/F7 used in the latency investigation, not general keyboard input.
+        int64_t key = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+        if ((type == kCGEventKeyDown || type == kCGEventKeyUp) && (key == 97 || key == 98)) {
+            fprintf(stderr, "ISS latency %.3f ms: F%lld %s tap, event timestamp %.3f ms\n",
+                    latency_time_ms(), (long long)(key - 91),
+                    type == kCGEventKeyDown ? "down" : "up",
+                    (double)CGEventGetTimestamp(event) / 1e6);
+        }
+        if (type == kCGSEventDockControl &&
+            CGEventGetIntegerValueField(event, kCGEventSourceUnixProcessID) == getpid()) {
+            fprintf(stderr, "ISS latency %.3f ms: own gesture tap phase %lld\n",
+                    latency_time_ms(),
+                    (long long)CGEventGetIntegerValueField(event, kCGEventGesturePhase));
+        }
+    }
 
     // Re-enable if the system disabled our tap for being too slow
     if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
@@ -469,6 +510,11 @@ static bool iss_post_dock_swipe(CGSGesturePhase phase, ISSDirection direction, d
             return false;
         }
         CGEventPost(kCGSessionEventTap, augmented);
+        if (latency_trace_enabled()) {
+            fprintf(stderr, "ISS latency %.3f ms: posted phase %u, velocity=%g, progress=%g\n",
+                    latency_time_ms(), phase,
+                    phase == kCGSGesturePhaseEnded ? vel : 0.0, progress);
+        }
         CFRelease(augmented);
         return true;
     }
@@ -484,7 +530,9 @@ static bool iss_perform_switch_gesture(ISSDirection direction, double velocity) 
     // Send three gesture events--began, changed, and ended
     // If we only send two then mission control doesn't work.
     // PR #88 (c64e0fd): macOS 27 can drop phases posted back-to-back.
-    const useconds_t phaseDelay = iss_requires_event_augmentation() ? 10000 : 0;
+    // 2 ms per gap (4 ms total) retained after reliable rapid F6/F7 testing
+    // on macOS 27.0 (26A428); reducing this does not remove Dock-side latency.
+    const useconds_t phaseDelay = iss_requires_event_augmentation() ? 2000 : 0;
 
     if (!iss_post_dock_swipe(kCGSGesturePhaseBegan, direction, velocity)) {
         return false;
@@ -661,7 +709,9 @@ static bool iss_switch_with_info(const ISSSpaceInfo *info, ISSDirection directio
 
 bool iss_switch(ISSDirection direction) {
     ISSSpaceInfo info;
+    iss_trace_latency("switch: space lookup begin");
     if (iss_get_space_info(&info)) {
+        iss_trace_latency("switch: space lookup end");
         unsigned int predicted;
         unsigned int current = get_prediction(info.displayID, &predicted) ? predicted : info.currentIndex;
         unsigned int target = direction == ISSDirectionLeft ? current - 1 : current + 1;
