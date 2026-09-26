@@ -9,7 +9,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
   private var spacesMenuItem: NSMenuItem?
   private var cachedSpaceInfo: ISSSpaceInfo?
   private var refreshWorkItem: DispatchWorkItem?
-  private var appearanceWorkItem: DispatchWorkItem?
+  // Only needed if the optional icon-update debounce below is re-enabled.
+  // private var appearanceWorkItem: DispatchWorkItem?
   private var renderedSpaceIndex: UInt32?
   private var hasRenderedIcon = false
 
@@ -120,15 +121,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
   func updateWithSpaceInfo(_ info: ISSSpaceInfo?) {
     cachedSpaceInfo = info
     updateMenuState()
-    // macOS 27 status-item rendering can synchronously wait for an animation
-    // fence during a Space transition, blocking hotkeys and the gesture tap.
-    // Coalesce icon changes until switching has settled.
-    appearanceWorkItem?.cancel()
-    let item = DispatchWorkItem { [weak self] in
-      self?.updateStatusItemAppearance()
-    }
-    appearanceWorkItem = item
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
+    updateStatusItemAppearance()
+
+    // Optional workaround if profiling again shows status-item animation-fence
+    // waits blocking input during Space transitions. After a reboot, immediate
+    // updates remained instant in user testing (September 26, 2026), so this is
+    // disabled. To retry, uncomment the property above and replace the direct
+    // updateStatusItemAppearance() call above with this block.
+    // appearanceWorkItem?.cancel()
+    // let item = DispatchWorkItem { [weak self] in
+    //   self?.updateStatusItemAppearance()
+    // }
+    // appearanceWorkItem = item
+    // DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
   }
 
   func scheduleRefresh(after delay: TimeInterval) {

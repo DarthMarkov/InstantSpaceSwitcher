@@ -76,5 +76,15 @@ manually reproducing the issue; no screen recording or input automation is neede
 - The user reported a small subjective improvement after restarting Dock; this
   was not measured. A reboot comparison was not performed in this investigation.
 
+### September 26, 2026 follow-up
+
+- The user reported that switching became instant after a reboot. The exact cause
+  of the earlier delay remains unknown.
+- Removing the 500 ms icon-update debounce still left switching instant in user
+  testing. Immediate icon updates remain active; skipping unchanged icons is
+  retained. The debounce code is commented out in `MenuBarController.swift`, with
+  instructions to retry it if profiling again shows status-item rendering
+  blocking input.
+
 Retained behavior: 2 ms phase gaps, original progress and terminal-only velocity,
-and fewer/deferred menu-bar icon updates. No verified fix for the remaining delay.
+and immediate menu-bar icon updates that skip unchanged icons.
